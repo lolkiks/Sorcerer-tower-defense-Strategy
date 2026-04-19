@@ -53,10 +53,13 @@ local function serializeValue(v)
 end
 
 local function serializeArgs(args)
-    local out = table.create(#args)
-    for i, v in ipairs(args) do
-        out[i] = string.format("[%d] = %s", i, serializeValue(v))
+    local argCount = args.n or #args
+    local out = table.create(argCount)
+
+    for i = 1, argCount do
+        out[i] = string.format("[%d] = %s", i, serializeValue(args[i]))
     end
+
     return "{" .. table.concat(out, ", ") .. "}"
 end
 
@@ -65,22 +68,22 @@ local function captureStep(remoteObj, method, args)
     local moneyBefore = moneyValue.Value
 
     local trackedTower = nil
-    for _, arg in ipairs(args) do
+    local argCount = args.n or #args
+    for i = 1, argCount do
+        local arg = args[i]
         if typeof(arg) == "Instance" and arg:IsDescendantOf(workspace) then
             trackedTower = arg
             break
         end
     end
 
-    local state = trackedTower and towerState(trackedTower) or nil
-
     table.insert(RecordedSteps, {
         Remote = remoteObj.Name,
         Method = method,
-        Args = table.clone(args),
+        Args = args,
         MoneyBefore = moneyBefore,
         Timestamp = stepTime,
-        TowerState = state,
+        TowerState = trackedTower and towerState(trackedTower) or nil,
     })
 
     print(string.format("Captured #%d: %s", #RecordedSteps, remoteObj.Name))
@@ -126,9 +129,9 @@ local function buildReplayCode()
 end
 
 local function makeDraggable(handle, root)
+    local dragging = false
     local dragStart
     local startPos
-    local dragging = false
 
     handle.InputBegan:Connect(function(input)
         if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
@@ -174,6 +177,7 @@ panel.Size = UDim2.new(0, 265, 0, 136)
 panel.Position = UDim2.new(0.5, -132, 0, 70)
 panel.BackgroundColor3 = Color3.fromRGB(26, 29, 36)
 panel.BorderSizePixel = 0
+panel.ClipsDescendants = true
 Instance.new("UICorner", panel).CornerRadius = UDim.new(0, 10)
 
 local header = Instance.new("Frame")
@@ -254,11 +258,22 @@ toggleBtn.MouseButton1Click:Connect(function()
     expanded = not expanded
     toggleBtn.Text = expanded and "▾" or "▸"
 
-    TweenService:Create(
+    if expanded then
+        content.Visible = true
+    end
+
+    local tween = TweenService:Create(
         panel,
         TweenInfo.new(0.2, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
         { Size = expanded and expandedSize or collapsedSize }
-    ):Play()
+    )
+
+    tween:Play()
+    tween.Completed:Once(function()
+        if not expanded then
+            content.Visible = false
+        end
+    end)
 end)
 
 local oldNamecall
@@ -267,11 +282,13 @@ oldNamecall = hookmetamethod(game, "__namecall", function(self, ...)
 
     if isRecording and (method == "InvokeServer" or method == "FireServer") then
         if typeof(self) == "Instance" and VALID_REMOTES[self.Name] then
-            local args = { ... }
-            local ok, err = pcall(captureStep, self, method, args)
-            if not ok then
-                warn("[StrategyRecorder] capture failed: " .. tostring(err))
-            end
+            local args = table.pack(...)
+            task.defer(function()
+                local ok, err = pcall(captureStep, self, method, args)
+                if not ok then
+                    warn("[StrategyRecorder] capture failed: " .. tostring(err))
+                end
+            end)
         end
     end
 
