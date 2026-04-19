@@ -8,27 +8,12 @@ local moneyValue = lp:WaitForChild("leaderstats"):WaitForChild("Money")
 
 local RecordedSteps = {}
 local isRecording = true
-local recordStart = os.clock()
 
 local VALID_REMOTES = {
     SpawnNewTower = true,
     UpgradeTower = true,
     SellTower = true,
 }
-
-local function towerState(instance)
-    if typeof(instance) ~= "Instance" or not instance.Parent then
-        return nil
-    end
-
-    local levelObj = instance:FindFirstChild("Upgrade")
-    local level = (levelObj and levelObj:IsA("IntValue")) and levelObj.Value or nil
-
-    return {
-        name = instance.Name,
-        level = level,
-    }
-end
 
 local function serializeValue(v)
     local t = typeof(v)
@@ -64,26 +49,12 @@ local function serializeArgs(args)
 end
 
 local function captureStep(remoteObj, method, args)
-    local stepTime = os.clock() - recordStart
     local moneyBefore = moneyValue.Value
-
-    local trackedTower = nil
-    local argCount = args.n or #args
-    for i = 1, argCount do
-        local arg = args[i]
-        if typeof(arg) == "Instance" and arg:IsDescendantOf(workspace) then
-            trackedTower = arg
-            break
-        end
-    end
-
     table.insert(RecordedSteps, {
         Remote = remoteObj.Name,
         Method = method,
         Args = args,
-        MoneyBefore = moneyBefore,
-        Timestamp = stepTime,
-        TowerState = trackedTower and towerState(trackedTower) or nil,
+        RequiredMoney = moneyBefore,
     })
 
     print(string.format("Captured #%d: %s", #RecordedSteps, remoteObj.Name))
@@ -96,28 +67,13 @@ local function buildReplayCode()
     table.insert(code, "local player = game:GetService(\"Players\").LocalPlayer")
     table.insert(code, "local money = player:WaitForChild(\"leaderstats\"):WaitForChild(\"Money\")")
     table.insert(code, "local remotes = game:GetService(\"ReplicatedStorage\"):WaitForChild(\"RemoteEvents\")")
-    table.insert(code, "local function getTower(name) return workspace:FindFirstChild(\"Towers\") and workspace.Towers:FindFirstChild(name) end")
     table.insert(code, "")
-
-    local prevTimestamp = 0
 
     for i, step in ipairs(RecordedSteps) do
         local argsText = serializeArgs(step.Args)
-        local delay = math.max(0, step.Timestamp - prevTimestamp)
-        prevTimestamp = step.Timestamp
 
         table.insert(code, string.format("-- Step %d: %s", i, step.Remote))
-        table.insert(code, string.format("repeat task.wait(0.1) until money.Value >= %d", step.MoneyBefore))
-
-        if delay > 0.2 then
-            table.insert(code, string.format("task.wait(%.2f)", delay))
-        end
-
-        if step.Remote == "UpgradeTower" and step.TowerState and step.TowerState.name then
-            table.insert(code, string.format("repeat task.wait(0.05) until getTower(%q)", step.TowerState.name))
-        elseif step.Remote == "SellTower" and step.TowerState and step.TowerState.name then
-            table.insert(code, string.format("repeat task.wait(0.05) until getTower(%q)", step.TowerState.name))
-        end
+        table.insert(code, string.format("repeat task.wait(0.1) until money.Value >= %d", step.RequiredMoney))
 
         table.insert(code, string.format("local args = %s", argsText))
         table.insert(code, string.format("remotes[%q]:%s(unpack(args))", step.Remote, step.Method))
